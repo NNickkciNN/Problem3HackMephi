@@ -1,0 +1,178 @@
+import matplotlib.pyplot as plt
+import numpy as np
+import random
+import scipy.special
+from math import pi,exp
+import cmath
+import numdifftools as nd
+from scipy import stats
+
+N = 6 # количество субапертур. Субапертуры располагаются в вершинах правильного многоугольника, симметрично относительно т. (0,0) в рад
+fi0 = np.concatenate(([0],[10*random.random() for i in range(N-1)])) # начальные фазы (задаются случайно) в рад
+fi = fi0.copy() # начальное значение искомых параметров в рад
+a = 1.2*10**(-3) # радиус субапертуры в [м]
+R = 5.0*10**(-3) # расстояние между центрами субапертур [м]
+z = 100 # расстояние от лазера по оси z [м]
+lam = 1064*10**(-9) # длина волны излучения [м]
+k = 2*np.pi/lam # волновой вектор [м^-1]
+# процесс задания координат вершин многоугольника 
+xn = [0,R]
+yn = [0,0]
+for i in range(1,N-1):
+    xn = np.concatenate(([R*np.cos(i*2*pi/(N-1))],xn))
+    yn = np.concatenate(([R*np.sin(i*2*pi/(N-1))],yn))
+
+I01 = 5.53*10**4 # выходная интенсивность лазера [Дж*м^-2*c^-1]
+Iid = N**2 # нормированная на I0 интенсивность на оси z в дальней зоне 
+# в т. (0,0) в случае интерфереционного сложения полей субапертур. Она используется как рефененсная интенсивность 
+# для подбора оптимальных фаз на модуляторах
+
+def f_I(fi, thetax,thetay):
+    j=complex(0,1)
+    p=k*a*(thetax**2+thetay**2)**0.5
+    C=cmath.exp((j*k*z/2)*(thetax**2+thetay**2))/(j*z*lam)
+    if (thetax == 0) & (thetay == 0):
+        e = pi*a**2/(j*z*lam)*(sum([cmath.exp(-j*(fi[i] + fi0[i])) for i in range(N)]))
+    else:
+        e=2*pi*a**2*C*scipy.special.jv(1,p)/p*(sum([cmath.exp(j*k*(thetax*xn[i]+thetay*yn[i]))*cmath.exp(-j*(fi[i] + fi0[i])) for i in range(N)]))
+    I=I01*abs(e)**2
+    return I
+
+def f_I0(fi):
+    j = complex(0,1)
+    return (abs(sum([np.exp(-j*(fi[i] + fi0[i])) for i in range(N)])))**2
+
+def L(fi):
+    return (Iid - f_I0(fi))**2
+
+def grad_L(fi):
+    gradI = nd.Gradient(f_I0)([fi])
+    return np.array(-2*(Iid - f_I0(fi))*gradI)
+
+def grad_descent(f, grad_f, lr, num_iter=100, fi0=fi0):
+    count = 1
+    curr_fi = fi0.copy()
+    history = []
+    for iter_num in range(num_iter):
+        entry = np.hstack((curr_fi, f(curr_fi)))
+        history.append(entry)
+        curr_fi -= grad_f(curr_fi)*lr
+        curr_fi[0] = 0
+        lr = lr*(count)**0.1
+        count += 1
+    return np.vstack(history)
+
+steps = grad_descent(L, grad_L, lr=0.001, num_iter=500)
+fi = steps[len(steps)-1][0:N]
+print(fi)
+j = complex(0,1)
+print(sum([cmath.exp(-j*(fi[i] + fi0[i])) for i in range(N)]))
+
+M = 501
+h = 0.05
+x = np.linspace(-h, h, M)
+y = np.linspace(-h, h, M)
+Intensity = np.zeros((M,M))
+for i in range(M):
+    for l in range(M):
+        Intensity[i,l] = f_I(fi,x[i]/z,y[l]/z)
+plt.title(r'I/xy', fontsize = 20)
+plt.xlabel('X coordinate', fontsize=10)
+plt.ylabel('Y coordinate', fontsize=10)
+x, y = np.meshgrid(
+    np.linspace(-h, h, M),
+    np.linspace(-h, h, M)
+)
+data = np.dstack((x, y))
+plt.contourf(x, y, Intensity, levels=100)
+
+
+M = 501
+h = 0.015
+x = np.linspace(-h, h, M)
+y = np.linspace(-h, h, M)
+Intensity = np.zeros((M,M))
+for i in range(M):
+    for l in range(M):
+        Intensity[i,l] = f_I(np.zeros(N),x[i]/z,y[l]/z)
+        
+plt.title(r'I/xy', fontsize = 20)
+plt.xlabel('X coordinate', fontsize=10)
+plt.ylabel('Y coordinate', fontsize=10)
+x, y = np.meshgrid(
+    np.linspace(-h, h, M),
+    np.linspace(-h, h, M)
+)
+data = np.dstack((x, y))
+plt.contourf(x, y, Intensity, levels=100)
+
+
+def func(thetax,thetay,x,x0,y0):
+    j=complex(0,1)
+    psi=((thetax-x0/z)**2+(thetay-y0/z)**2)**0.5
+    p=k*psi*x*a
+    f=scipy.special.jv(0,p)*x*cmath.exp(j*k*a**2*x**2/(2*z))
+    return f
+
+def Integrate(thetax,thetay,x0,y0):
+    T = 20
+    h = 1/T
+    x = np.array([i*h for i in range(T+1)])
+    fx = np.array([func(thetax,thetay,i,x0,y0) for i in x])
+    S = h/3*(fx[0]+ fx[len(fx)-1])
+    j = np.array([i for i in range(1,len(fx)-1)])
+    for i in j:
+        if i%2 == 0:
+            S+= h/3*2*fx[i]
+        else:
+            S+= h/3*4*fx[i]
+    return S
+
+def f_I1(fi, thetax,thetay):
+    j=complex(0,1)
+    C=np.exp((j*k*z/2)*(thetax**2+thetay**2))/(j*z*lam)
+    J = np.array([Integrate(thetax,thetay,xn[i],yn[i]) for i in range(len(xn))])
+    ex = np.array([np.exp(j*k*(xn[i]**2 + yn[i]**2)/(2*z)) for i in range(len(xn))])
+    e=2*np.pi*a**2*C*(sum([ex[i]*J[i]*cmath.exp(-j*k*(thetax*xn[i]+thetay*yn[i]))*cmath.exp(-j*(fi[i] + fi0[i])) for i in range(N)]))
+    I=I01*abs(e)**2
+    return I
+
+z = 2.5
+M = 151
+h = 0.0075
+x = np.linspace(-h, h, M)
+y = np.linspace(-h, h, M)
+Intensity = np.zeros((M,M))
+for i in range(M):
+    for l in range(M):
+        Intensity[i,l] = f_I1(fi,x[i]/z,y[l]/z)
+        
+plt.title(r'I/xy', fontsize = 20)
+plt.xlabel('X coordinate', fontsize=10)
+plt.ylabel('Y coordinate', fontsize=10)
+x, y = np.meshgrid(
+    np.linspace(-h, h, M),
+    np.linspace(-h, h, M)
+)
+data = np.dstack((x, y))
+plt.contourf(x, y, Intensity, levels=100)
+
+z = 2.5
+M = 151
+h = 0.0075
+x = np.linspace(-h, h, M)
+y = np.linspace(-h, h, M)
+Intensity = np.zeros((M,M))
+for i in range(M):
+    for l in range(M):
+        Intensity[i,l] = f_I1(np.zeros(N),x[i]/z,y[l]/z)
+        
+plt.title(r'I/xy', fontsize = 20)
+plt.xlabel('X coordinate', fontsize=10)
+plt.ylabel('Y coordinate', fontsize=10)
+x, y = np.meshgrid(
+    np.linspace(-h, h, M),
+    np.linspace(-h, h, M)
+)
+data = np.dstack((x, y))
+plt.contourf(x, y, Intensity, levels=100)
